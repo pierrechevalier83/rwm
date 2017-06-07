@@ -4,5 +4,4 @@ version = "0.1.0"
 authors = ["Pierre Chevalier <pierrechevalier83@gmail.com>"]
 
 [dependencies]
-rustwlc = "0.6"
-lazy_static = "0.2"
+wlc = "2.0"

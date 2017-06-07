@@ -1,307 +1,312 @@
-use std::sync::RwLock;
-
-#[macro_use]
-extern crate lazy_static;
-
-extern crate rustwlc;
-
-use rustwlc::*;
-use rustwlc::xkb::keysyms;
+extern crate wlc;
 
 use std::cmp;
+use std::env;
+use std::process;
+use wlc::*;
 
 struct Compositor {
-    pub view: Option<WlcView>,
-    pub grab: Point,
-    pub edges: ResizeEdge
+    action: Action,
 }
 
-lazy_static! {
-    static ref COMPOSITOR: RwLock<Compositor> =
-        RwLock::new(Compositor { view: None,
-                                 grab: Point { x: 0, y: 0 },
-                                 edges: ResizeEdge::empty() });
+enum Action {
+    None,
+    Move(WeakView, Point),
+    Resize(WeakView, Point, ResizeEdge::Flags),
 }
 
-fn start_interactive_action(view: WlcView, origin: Point) -> bool {
-    let mut comp = COMPOSITOR.write().unwrap();
-    if comp.view != None {
-        return false
-    }
-    comp.grab = origin;
-    comp.view = Some(view);
-
-    view.bring_to_front();
-    return true
-}
-
-fn start_interactive_move(view: WlcView, origin: Point) {
-    start_interactive_action(view, origin);
-}
-
-fn start_interactive_resize(view: WlcView, edges: ResizeEdge, origin: Point) {
-    let geometry = match view.get_geometry() {
-        None => { return; }
-        Some(g) => g,
-    };
-
-    if !start_interactive_action(view, origin) {
-        return;
-    }
-    let halfw = geometry.origin.x + geometry.size.w as i32 / 2;
-    let halfh = geometry.origin.y + geometry.size.h as i32 / 2;
-
-    {
-        let mut comp = COMPOSITOR.write().unwrap();
-        comp.edges = edges;
-        if comp.edges.bits() == 0 {
-            let flag_x = if origin.x < halfw {
-                RESIZE_LEFT
-            } else if origin.x > halfw {
-                RESIZE_RIGHT
-            } else {
-                ResizeEdge::empty()
-            };
-
-            let flag_y = if origin.y < halfh {
-                RESIZE_TOP
-            } else if origin.y > halfh {
-                RESIZE_BOTTOM
-            } else {
-                ResizeEdge::empty()
-            };
-
-            comp.edges = flag_x | flag_y;
+impl Action {
+    fn is_none(&self) -> bool {
+        match *self {
+            Action::None => true,
+            _ => false,
         }
     }
-    view.set_state(VIEW_RESIZING, true);
 }
 
-fn stop_interactive_action() {
-    let mut comp = COMPOSITOR.write().unwrap();
-
-    match comp.view {
-        None => return,
-        Some(ref view) =>
-            view.set_state(VIEW_RESIZING, false)
+impl Compositor {
+    fn new() -> Compositor {
+        Compositor { action: Action::None }
     }
 
-    comp.view = None;
-    comp.edges = ResizeEdge::empty();
-}
-
-fn get_topmost_view(output: WlcOutput, offset: usize) -> Option<WlcView> {
-    let views = output.get_views();
-    if views.is_empty() { None }
-    else {
-        Some(views[(views.len() - 1 + offset) % views.len()])
+    fn start_interactive_move(&mut self, view: &View, origin: Point) {
+        let in_progess = !self.action.is_none();
+        if !in_progess {
+            view.bring_to_front();
+            self.action = Action::Move(view.weak_reference(), origin);
+        }
     }
-}
 
-fn render_output(output: WlcOutput) {
-    let resolution = output.get_resolution().unwrap();
-    let views = output.get_views();
-    if views.is_empty() { return; }
+    fn start_interactive_resize(&mut self, view: &View, edges: ResizeEdge::Flags, origin: Point) {
+        let in_progess = !self.action.is_none();
+        if !in_progess {
+            let action_edges = if edges.is_empty() {
+                let geo = view.geometry();
+                let halfw = geo.origin.x + geo.size.w as i32 / 2;
+                let halfh = geo.origin.y + geo.size.h as i32 / 2;
 
-    let mut toggle = false;
-    let mut y = 0;
-    let w = resolution.w / 2;
-    let h = resolution.h / cmp::max((views.len() + 1) / 2, 1) as u32;
-    for (i, view) in views.iter().enumerate() {
-        view.set_geometry(ResizeEdge::empty(), Geometry {
-            origin: Point { x: if toggle { w as i32 } else { 0 }, y: y },
-            size: Size { w: if !toggle && i == views.len() - 1 { resolution.w } else { w }, h: h }
-        });
-        y += if toggle { h as i32 } else { 0 };
-        toggle ^= true;
+                let vertical = if origin.x < halfw {
+                    ResizeEdge::Left
+                } else if origin.x > halfw {
+                    ResizeEdge::Right
+                } else {
+                    ResizeEdge::Null
+                };
+
+                let horizontal = if origin.y < halfh {
+                    ResizeEdge::Left
+                } else if origin.y > halfh {
+                    ResizeEdge::Right
+                } else {
+                    ResizeEdge::Null
+                };
+
+                vertical | horizontal
+            } else {
+                edges
+            };
+
+            view.bring_to_front();
+            view.set_state(ViewState::Resizing, true);
+            self.action = Action::Resize(view.weak_reference(), origin, action_edges);
+        }
     }
-}
 
-// Handles
-
-extern fn on_output_resolution(output: WlcOutput, _from: &Size, _to: &Size) {
-    render_output(output);
-}
-
-extern fn on_view_created(view: WlcView) -> bool {
-    view.set_mask(view.get_output().get_mask());
-    view.bring_to_front();
-    view.focus();
-    render_output(view.get_output());
-    true
-}
-
-extern fn on_view_destroyed(view: WlcView) {
-    if let Some(top_view) = get_topmost_view(view.get_output(), 0) {
-        top_view.focus();
+    fn stop_interactive_action(&mut self) {
+        if let Action::Resize(ref weakview, _, _) = self.action {
+            weakview.run(|view| { view.set_state(ViewState::Resizing, false); });
+        };
+        self.action = Action::None;
     }
-    render_output(view.get_output());
-}
 
-extern fn on_view_focus(view: WlcView, focused: bool) {
-    view.set_state(VIEW_ACTIVATED, focused);
-}
+    fn top_most<'a>(&mut self, output: &'a Output, offset: usize) -> Option<&'a View> {
+        let views = output.views();
+        match views.len() {
+            0 => None,
+            len => Some(views[(len - 1 + offset) % len]),
+        }
+    }
 
-extern fn on_view_request_move(view: WlcView, origin: &Point) {
-    start_interactive_move(view, *origin);
-}
+    fn relayout(&mut self, output: &Output) {
+        // very simple layout function
+        // you probably dont want to layout certain types of windows in a wm
 
-extern fn on_view_request_resize(view: WlcView, edges: ResizeEdge, origin: &Point) {
-    start_interactive_resize(view, edges, *origin);
-}
+        let size = output.virtual_resolution();
+        let len = output.views().len();
 
-extern fn on_keyboard_key(view: WlcView, _time: u32, mods: &KeyboardModifiers, key: u32, state: KeyState) -> bool {
-    use std::process::Command;
-    let sym = input::keyboard::get_keysym_for_key(key, *mods);
-    if state == KeyState::Pressed {
-        if mods.mods == MOD_CTRL {
-            // Key Q
-            if sym == keysyms::KEY_q {
-                if !view.is_root() {
-                    view.close();
+        let mut toggle = false;
+        let mut y = 0;
+
+        let n = cmp::max((1 + len) / 2, 1) as u32;
+        let (width, height) = (size.w / 2, size.h / n);
+        let (ewidth, eheight) = (size.w - width * 2, size.h - height * n);
+
+        for (i, view) in output.views().into_iter().enumerate() {
+            match view.positioner() {
+                Some(pos) => {
+                    let mut size_req = pos.size();
+                    if size_req.w == 0 || size_req.h == 0 {
+                        size_req = view.geometry().size;
+                    }
+
+                    let mut geometry = Geometry {
+                        origin: pos.anchor_rect().origin,
+                        size: size_req,
+                    };
+
+                    if let Some(parent) = view.parent() {
+                        let parent_geometry = parent.geometry();
+                        geometry.origin.x += parent_geometry.origin.x;
+                        geometry.origin.y += parent_geometry.origin.y;
+                    }
+
+                    view.set_geometry(ResizeEdge::Null, geometry);
                 }
-                return true;
-            // Down key
-            } else if sym == keysyms::KEY_Down {
-                view.send_to_back();
-                get_topmost_view(view.get_output(), 0).unwrap().focus();
-                return true;
-            // Esc Key
-            } else if sym == keysyms::KEY_Escape {
+                None => {
+                    let geometry = Geometry {
+                        origin: Point {
+                            x: if toggle { width + ewidth } else { 0 } as i32,
+                            y: y,
+                        },
+                        size: Size {
+                            w: if !toggle && i == len - 1 {
+                                size.w
+                            } else if toggle {
+                                width
+                            } else {
+                                width + ewidth
+                            },
+                            h: if i < 2 { height + eheight } else { height },
+                        },
+                    };
+                    view.set_geometry(ResizeEdge::Null, geometry);
+                    y += if toggle { geometry.size.h } else { 0 } as i32;
+                    toggle = !toggle;
+                }
+            }
+        }
+    }
+}
+
+impl wlc::Callback for Compositor {
+    fn output_resolution(&mut self, output: &Output, _from: Size, _to: Size) {
+        self.relayout(output);
+    }
+
+    fn view_created(&mut self, view: &View) -> bool {
+        view.set_visibility(view.output().visibility());
+        view.bring_to_front();
+        view.focus();
+        self.relayout(view.output());
+        true
+    }
+
+    fn view_destroyed(&mut self, view: &View) {
+        match self.top_most(view.output(), 0) {
+            Some(view) => view.focus(),
+            None => View::set_no_focus(),
+        };
+        self.relayout(view.output());
+    }
+
+    fn view_focus(&mut self, view: &View, focus: bool) {
+        view.set_state(ViewState::Activated, focus);
+    }
+
+    fn view_request_move(&mut self, view: &View, origin: Point) {
+        self.start_interactive_move(view, origin)
+    }
+
+    fn view_request_resize(&mut self, view: &View, edges: ResizeEdge::Flags, origin: Point) {
+        self.start_interactive_resize(view, edges, origin)
+    }
+
+    fn view_request_geometry(&mut self, _view: &View, _geometry: Geometry) {
+        // stub intentionally ignore geometry requests
+    }
+
+    fn keyboard_key(&mut self, view: Option<&View>, _time: u32, modifiers: Modifiers, key: Key,
+                    state: KeyState)
+                    -> bool {
+        use wlc::input::keyboard::Keysyms;
+
+        let sym = input::keyboard::keysym_for_key(key, Modifiers::empty());
+
+        if state == KeyState::Pressed {
+            if let Some(view) = view {
+                if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Q {
+                    view.close();
+                    return true;
+                } else if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Down {
+                    view.send_to_back();
+                    if let Some(new_view) = self.top_most(view.output(), 0) {
+                        new_view.focus();
+                    }
+                    return true;
+                }
+            }
+
+            if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Escape {
                 terminate();
                 return true;
-            // Return key
-            } else if sym == keysyms::KEY_Return {
-                let _ = Command::new("sh")
-                                .arg("-c")
-                                .arg("st || echo a").spawn()
-                    .unwrap_or_else(|e| {
-                        println!("Error spawning child: {}", e); panic!("spawning child")});
+            } else if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Return {
+                process::Command::new(if env::var("TERMINAL").is_ok() {
+                                          env::var("TERMINAL").unwrap()
+                                      } else {
+                                          String::from("st")
+                                      })
+                        .spawn()
+                        .expect("failed to spawn process");
                 return true;
-            } else if sym.raw() >= keysyms::KEY_1.raw() && sym.raw() <= keysyms::KEY_9.raw() {
-                let outputs = WlcOutput::list();
-                let scale = (sym.raw() - keysyms::KEY_1.raw()) + 1;
-                for output in outputs {
-                    output.set_resolution(output.get_resolution()
-                                          .expect("No resolution"), scale);
-                }
-                println!("scale: {}", scale);
+            } else if modifiers.mods.contains(Modifier::Ctrl) && sym >= Keysyms::KEY_1 &&
+                      sym <= Keysyms::KEY_9 {
+                Output::with_all_outputs(|outputs| {
+                    let scale = (sym - Keysyms::KEY_1) + 1;
+                    for output in outputs {
+                        output.set_resolution(output.resolution(), scale);
+                    }
+                    println!("scale: {}", scale);
+                });
                 return true;
             }
         }
-    }
-    return false;
-}
 
-extern fn on_pointer_button(view: WlcView, _time: u32, mods: &KeyboardModifiers,
-                            button: u32, state: ButtonState, point: &Point) -> bool {
-    if state == ButtonState::Pressed {
-        if !view.is_root() && mods.mods.contains(MOD_CTRL) {
-            view.focus();
-            if mods.mods.contains(MOD_CTRL) {
-                // Button left, we need to include linux/input.h somehow
-                if button == 0x110 {
-                    start_interactive_move(view, *point);
+        false
+    }
+
+    fn pointer_button(&mut self, view: Option<&View>, _time: u32, modifiers: Modifiers, button: Button,
+                      state: ButtonState, origin: Point)
+                      -> bool {
+        if state == ButtonState::Pressed {
+            match view {
+                Some(view) => {
+                    view.focus();
+                    if modifiers.mods.contains(Modifier::Ctrl) && button == Button::Left {
+                        self.start_interactive_move(view, origin);
+                    } else if modifiers.mods.contains(Modifier::Ctrl) && button == Button::Right {
+                        self.start_interactive_resize(view, ResizeEdge::Null, origin);
+                    }
                 }
-                if button == 0x111 {
-                    start_interactive_resize(view, ResizeEdge::empty(), *point);
-                }
-            }
+                None => View::set_no_focus(),
+            };
+        } else {
+            self.stop_interactive_action()
         }
+
+        !self.action.is_none()
     }
-    else {
-        stop_interactive_action();
-    }
 
-    {
-        let comp = COMPOSITOR.read().unwrap();
-        return comp.view.is_some();
-    }
-}
-extern fn on_pointer_motion(_in_view: WlcView, _time: u32, point: &Point) -> bool {
-    rustwlc::input::pointer::set_position(*point);
-    {
-        let comp = COMPOSITOR.read().unwrap();
-        if let Some(ref view) = comp.view {
-                let dx = point.x - comp.grab.x;
-                let dy = point.y - comp.grab.y;
-                let mut geo = view.get_geometry().unwrap();
-                if comp.edges.bits() != 0 {
-                    let min = Size { w: 80u32, h: 40u32};
-                    let mut new_geo = geo;
+    fn pointer_motion(&mut self, _view: Option<&View>, _time: u32, position: Point) -> bool {
+        match self.action {
+            Action::Resize(ref weakview, ref grab, ref edges) => {
+                weakview.run(|view| {
+                    let dx = position.x - grab.x;
+                    let dy = position.y - grab.y;
+                    let mut geo = view.geometry();
 
-                    if comp.edges.contains(RESIZE_LEFT) {
-                        if dx < 0 {
-                            new_geo.size.w += dx.abs() as u32;
-                        } else {
-                            new_geo.size.w -= dx.abs() as u32;
-                        }
-                        new_geo.origin.x += dx;
-                    }
-                    else if comp.edges.contains(RESIZE_RIGHT) {
-                        if dx < 0 {
-                            new_geo.size.w -= dx.abs() as u32;
-                        } else {
-                            new_geo.size.w += dx.abs() as u32;
-                        }
+                    let min_size = Size { w: 80, h: 40 };
+                    let mut n = geo;
+
+                    if edges.contains(ResizeEdge::Left) {
+                        n.size.w = (n.size.w as i32 - dx) as u32;
+                        n.origin.x += dx;
+                    } else if edges.contains(ResizeEdge::Right) {
+                        n.size.w = (n.size.w as i32 + dx) as u32;
                     }
 
-                    if comp.edges.contains(RESIZE_TOP) {
-                        if dy < 0 {
-                            new_geo.size.h += dy.abs() as u32;
-                        } else {
-                            new_geo.size.h -= dy.abs() as u32;
-                        }
-                        new_geo.origin.y += dy;
-                    }
-                    else if comp.edges.contains(RESIZE_BOTTOM) {
-                        if dy < 0 {
-                            new_geo.size.h -= dy.abs() as u32;
-                        } else {
-                            new_geo.size.h += dy.abs() as u32;
-                        }
+                    if edges.contains(ResizeEdge::Top) {
+                        n.size.h = (n.size.h as i32 - dy) as u32;
+                        n.origin.y += dy;
+                    } else if edges.contains(ResizeEdge::Bottom) {
+                        n.size.h = (n.size.h as i32 + dy) as u32;
                     }
 
-                    if new_geo.size.w >= min.w {
-                        geo.origin.x = new_geo.origin.x;
-                        geo.size.w = new_geo.size.w;
+                    if n.size >= min_size {
+                        geo = n;
                     }
 
-                    if new_geo.size.h >= min.h {
-                        geo.origin.y = new_geo.origin.y;
-                        geo.size.h = new_geo.size.h;
-                    }
+                    view.set_geometry(*edges, geo);
+                });
+            }
+            Action::Move(ref weakview, ref grab) => {
+                weakview.run(|view| {
+                    let dx = position.x - grab.x;
+                    let dy = position.y - grab.y;
+                    let mut geo = view.geometry();
 
-                    view.set_geometry(comp.edges, geo);
-                }
-                else {
                     geo.origin.x += dx;
                     geo.origin.y += dy;
-                    view.set_geometry(ResizeEdge::empty(), geo);
-                }
-        }
-    }
+                    view.set_geometry(ResizeEdge::Null, geo);
+                });
+            }
+            Action::None => {}
+        };
 
-    {
-        let mut comp = COMPOSITOR.write().unwrap();
-        comp.grab = *point;
-        return comp.view.is_some();
+        input::pointer::set_position(position);
+        !self.action.is_none()
     }
 }
 
 fn main() {
-    callback::output_resolution(on_output_resolution);
-    callback::view_created(on_view_created);
-    callback::view_destroyed(on_view_destroyed);
-    callback::view_focus(on_view_focus);
-    callback::view_request_move(on_view_request_move);
-    callback::view_request_resize(on_view_request_resize);
-    callback::keyboard_key(on_keyboard_key);
-    callback::pointer_button(on_pointer_button);
-    callback::pointer_motion(on_pointer_motion);
-
-    rustwlc::log_set_default_handler();
-    let run_fn = rustwlc::init().expect("Unable to initialize wlc!");
-    run_fn();
+    wlc::init(Compositor::new()).unwrap();
 }
-
