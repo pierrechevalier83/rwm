@@ -209,7 +209,7 @@ impl wlc::Callback for Compositor {
                 }
             }
 
-            if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Escape {
+            if modifiers.mods.contains(config::MOD_KEY) && modifiers.mods.contains(Modifier::Shift) && sym == Keysyms::KEY_q {
                 terminate();
                 return true;
             } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Return {
