@@ -197,7 +197,7 @@ impl wlc::Callback for Compositor {
 
         if state == KeyState::Pressed {
             if let Some(view) = view {
-                if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Q {
+                if modifiers.mods.contains(config::MOD_KEY) && modifiers.mods.contains(Modifier::Shift) && sym == Keysyms::KEY_c {
                     view.close();
                     return true;
                 } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Down {
