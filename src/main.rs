@@ -1,11 +1,12 @@
+#![feature(const_fn)]
 extern crate wlc;
 
 use std::cmp;
-use std::env;
 use std::process;
 use wlc::*;
 
 mod config;
+mod cmd;
 
 struct Compositor {
     action: Action,
@@ -212,11 +213,9 @@ impl wlc::Callback for Compositor {
                 terminate();
                 return true;
             } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Return {
-                process::Command::new(if env::var("TERMINAL").is_ok() {
-                                          env::var("TERMINAL").unwrap()
-                                      } else {
-                                          String::from("st")
-                                      })
+                let term = cmd::Cmd::new(&config::TERMINAL);
+                process::Command::new(&term.name)
+                        .args(&term.args)
                         .spawn()
                         .expect("failed to spawn process");
                 return true;
