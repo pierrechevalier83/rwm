@@ -219,6 +219,20 @@ impl wlc::Callback for Compositor {
                         .spawn()
                         .expect("failed to spawn process");
                 return true;
+            } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_w {
+                let term = cmd::Cmd::new(&config::WEB);
+                process::Command::new(&term.name)
+                        .args(&term.args)
+                        .spawn()
+                        .expect("failed to spawn process");
+                return true;
+            } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_p {
+                let term = cmd::Cmd::new(&config::MENU);
+                process::Command::new(&term.name)
+                        .args(&term.args)
+                        .spawn()
+                        .expect("failed to spawn process");
+                return true;
             } else if modifiers.mods.contains(config::MOD_KEY) && sym >= Keysyms::KEY_1 &&
                       sym <= Keysyms::KEY_9 {
                 Output::with_all_outputs(|outputs| {
