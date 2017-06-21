@@ -5,6 +5,8 @@ use std::env;
 use std::process;
 use wlc::*;
 
+mod config;
+
 struct Compositor {
     action: Action,
 }
@@ -194,10 +196,10 @@ impl wlc::Callback for Compositor {
 
         if state == KeyState::Pressed {
             if let Some(view) = view {
-                if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Q {
+                if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Q {
                     view.close();
                     return true;
-                } else if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Down {
+                } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Down {
                     view.send_to_back();
                     if let Some(new_view) = self.top_most(view.output(), 0) {
                         new_view.focus();
@@ -206,10 +208,10 @@ impl wlc::Callback for Compositor {
                 }
             }
 
-            if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Escape {
+            if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Escape {
                 terminate();
                 return true;
-            } else if modifiers.mods.contains(Modifier::Ctrl) && sym == Keysyms::KEY_Return {
+            } else if modifiers.mods.contains(config::MOD_KEY) && sym == Keysyms::KEY_Return {
                 process::Command::new(if env::var("TERMINAL").is_ok() {
                                           env::var("TERMINAL").unwrap()
                                       } else {
@@ -218,7 +220,7 @@ impl wlc::Callback for Compositor {
                         .spawn()
                         .expect("failed to spawn process");
                 return true;
-            } else if modifiers.mods.contains(Modifier::Ctrl) && sym >= Keysyms::KEY_1 &&
+            } else if modifiers.mods.contains(config::MOD_KEY) && sym >= Keysyms::KEY_1 &&
                       sym <= Keysyms::KEY_9 {
                 Output::with_all_outputs(|outputs| {
                     let scale = (sym - Keysyms::KEY_1) + 1;
@@ -241,9 +243,9 @@ impl wlc::Callback for Compositor {
             match view {
                 Some(view) => {
                     view.focus();
-                    if modifiers.mods.contains(Modifier::Ctrl) && button == Button::Left {
+                    if modifiers.mods.contains(config::MOD_KEY) && button == Button::Left {
                         self.start_interactive_move(view, origin);
-                    } else if modifiers.mods.contains(Modifier::Ctrl) && button == Button::Right {
+                    } else if modifiers.mods.contains(config::MOD_KEY) && button == Button::Right {
                         self.start_interactive_resize(view, ResizeEdge::Null, origin);
                     }
                 }
